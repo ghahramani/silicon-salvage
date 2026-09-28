@@ -1,0 +1,17 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Raw device dumps, backups, and configs
+*.bin
+*.raw
+*.dump
+*.img
+*.orig
+*.log
+
+# System files
+.DS_Store
+.vscode/
+.idea/

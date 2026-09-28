@@ -1,0 +1,1476 @@
+From 71842c74058a69af0188f3737ce18803ab9e283e Mon Sep 17 00:00:00 2001
+From: Navid Ghahremani <ghahramani.navid@gmail.com>
+Date: Mon, 28 Sep 2026 21:26:07 +0100
+Subject: [PATCH] econet: add EN751627 switch/NAND support and Zyxel EX3301-T0
+
+Add support for the EcoNet EN751627 SoC and the Zyxel EX3301-T0:
+- Integrated switch and Gigabit Ethernet ports (lan1-lan4, wan)
+- MDIO MediaTek PHY driver integration and LED control
+- SPI-NAND JFFS2 overlay persistence across reboots
+- Dual-slot bootloader integration (tclinux.trx, RAS.bin) and OpenWrt sysupgrade
+
+Signed-off-by: Navid Ghahremani <ghahramani.navid@gmail.com>
+---
+ .../patches/001-en751627-support.patch        |  40 ++++
+ ...02-fix-reg-lock-held-across-qdma-use.patch |  60 +++++
+ .../003-remove-unexpected-fport-print.patch   |  30 +++
+ .../004-fix-unmasked-error-irq-storm.patch    |  83 +++++++
+ ...x-en751627-dma-descriptor-byte-order.patch |  42 ++++
+ ...nd-without-oob-cleanmarkers-as-jffs2.patch |  11 +
+ .../econet/base-files/etc/board.d/01_leds     |  13 ++
+ .../econet/base-files/etc/board.d/02_network  |   3 +
+ .../lib/preinit/81_mount_root_fallback        |  15 ++
+ .../econet/base-files/lib/upgrade/platform.sh |  16 ++
+ target/linux/econet/dts/en751627.dtsi         | 217 ++++++++++++++++++
+ .../econet/dts/en751627_zyxel_ex3301-t0.dts   | 176 +++++++++++++-
+ target/linux/econet/en751627/config-6.18      |  10 +-
+ .../econet/files/drivers/mtd/nand/en75_bmt.c  |  57 ++++-
+ target/linux/econet/image/en751627.mk         |   6 +-
+ ...-net-dsa-mt7530-add-en751627-support.patch | 113 +++++++++
+ ...iatek-accept-mt7988-phy-at-addr-8-12.patch | 140 +++++++++++
+ ...t-dsa-mt7530-skip-reset-for-en751627.patch |  40 ++++
+ .../950-jffs2-handle-bad-blocks-on-scan.patch |  97 ++++++++
+ .../generic/files/drivers/mtd/nand/mtk_bmt.c  |   1 +
+ 20 files changed, 1159 insertions(+), 11 deletions(-)
+ create mode 100644 package/kernel/econet-eth/patches/001-en751627-support.patch
+ create mode 100644 package/kernel/econet-eth/patches/002-fix-reg-lock-held-across-qdma-use.patch
+ create mode 100644 package/kernel/econet-eth/patches/003-remove-unexpected-fport-print.patch
+ create mode 100644 package/kernel/econet-eth/patches/004-fix-unmasked-error-irq-storm.patch
+ create mode 100644 package/kernel/econet-eth/patches/005-fix-en751627-dma-descriptor-byte-order.patch
+ create mode 100644 package/system/fstools/patches/0001-mtd-identify-nand-without-oob-cleanmarkers-as-jffs2.patch
+ create mode 100644 target/linux/econet/base-files/lib/preinit/81_mount_root_fallback
+ create mode 100644 target/linux/econet/patches-6.18/916-net-dsa-mt7530-add-en751627-support.patch
+ create mode 100644 target/linux/econet/patches-6.18/917-phy-mediatek-accept-mt7988-phy-at-addr-8-12.patch
+ create mode 100644 target/linux/econet/patches-6.18/920-net-dsa-mt7530-skip-reset-for-en751627.patch
+ create mode 100644 target/linux/econet/patches-6.18/950-jffs2-handle-bad-blocks-on-scan.patch
+
+diff --git a/package/kernel/econet-eth/patches/001-en751627-support.patch b/package/kernel/econet-eth/patches/001-en751627-support.patch
+new file mode 100644
+index 0000000000..eb5f34e48b
+--- /dev/null
++++ b/package/kernel/econet-eth/patches/001-en751627-support.patch
+@@ -0,0 +1,40 @@
++AUDIT 2026-09-11: the byte-order assumption below is incorrect. Patch 005
++corrects it for this big-endian target. DSCP here means DMA descriptor,
++not IP DSCP/QoS. Retained below as the history of this local patch.
++
++WIP / UNTESTED: add EN751627 to the SoC match table, copying en7528's
++dscp_byte_swap=false rather than en751221's, on the grounds that EN751627
++uses the same airoha,en7523-scu / EN7523_* reset binding as EN7528 (confirmed
++from the actual devicetree sources in this tree) rather than en751221's
++separate econet,en751221-scu binding. This value has not been verified
++against real EN751627 hardware.
++
++Needed for target/linux/econet's en751627_zyxel_ex3301-t0.dts, which now
++enables &ethernet/&switch using compatible = "econet,en751627-eth" /
++"econet,en751627-switch".
++
++--- a/econet_eth.c
+++++ b/econet_eth.c
++@@ -431,9 +431,22 @@ static const struct en75_soc_data en7528_soc_data = {
++ 	.dscp_byte_swap = false,
++ };
++
+++/*
+++ * UNTESTED GUESS: EN751627 shares en7528's scu/reset binding (both use
+++ * airoha,en7523-scu / EN7523_* reset constants, confirmed from the actual
+++ * devicetree source), so this copies en7528_soc_data's value rather than
+++ * en751221's. dscp_byte_swap has not been verified against real EN751627
+++ * hardware -- if DSCP/QoS marking comes out wrong on this SoC, this is the
+++ * first thing to flip.
+++ */
+++static const struct en75_soc_data en751627_soc_data = {
+++	.dscp_byte_swap = false,
+++};
+++
++ static const struct of_device_id of_en75_match[] = {
++ 	{ .compatible = "econet,en751221-eth", .data = &en751221_soc_data },
++ 	{ .compatible = "econet,en7528-eth", .data = &en7528_soc_data },
+++	{ .compatible = "econet,en751627-eth", .data = &en751627_soc_data },
++ 	{ /* sentinel */ }
++ };
++ MODULE_DEVICE_TABLE(of, of_en75_match);
+diff --git a/package/kernel/econet-eth/patches/002-fix-reg-lock-held-across-qdma-use.patch b/package/kernel/econet-eth/patches/002-fix-reg-lock-held-across-qdma-use.patch
+new file mode 100644
+index 0000000000..e1c34aec2e
+--- /dev/null
++++ b/package/kernel/econet-eth/patches/002-fix-reg-lock-held-across-qdma-use.patch
+@@ -0,0 +1,60 @@
++From: local
++Subject: econet-eth: don't hold port->reg_lock (spinlock) across en75_qdma_use (mutex)
++
++Confirmed by CONFIG_PROVE_LOCKING (lockdep) on real EN751627 hardware:
++
++  [ BUG: Invalid wait context ]
++  netifd/2091 is trying to lock:
++  (&qdma->lock){....}-{3:3}, at: en75_qdma_use+0x1c/0xe8 [econet_eth]
++  context-{4:4}
++  2 locks held by netifd/2091:
++   #0: (rtnl_mutex){+.+.}-{3:3}, at: dev_ioctl+0x2cc/0x5f0
++   #1: (&port->reg_lock){+.+.}-{2:2}, at: en75_qdma_new+0xe90/0x20bc [econet_eth]
++
++en75_dev_open() takes port->reg_lock (a spinlock) via guard(spinlock), whose
++scope extends to the end of the function per its C cleanup-attribute
++semantics -- and en75_qdma_use() (still called within that scope, at the
++function's `return` statement) takes qdma->lock via mutex_lock_nested().
++Taking a sleeping-capable lock (mutex) while holding a non-sleeping one
++(spinlock) is what lockdep's wait-context check exists to catch.
++
++Every other guard(spinlock)(&port->reg_lock) call site in this file (in
++en75_set_gdm_port_fwd_cfg and en75_dev_change_mtu) has nothing after it
++that can sleep, so this appears to be the only site affected. The intended
++scope was almost certainly just the three register accesses immediately
++following the lock -- en75_set_macaddr() elsewhere in this same file
++already uses scoped_guard(spinlock, ...) { ... } for exactly this reason.
++Narrowing en75_dev_open's spinlock to a scoped_guard around just those
++register accesses (matching that existing style) drops the lock before
++en75_qdma_use() is reached, resolving the invalid wait context with no
++change in what's actually protected.
++
++This function (en75_qdma_new, which en75_dev_open's call path runs
++through) is also the exact function present in every stack trace of a
++separate, severe symptom: en75_qdma_xmit() permanently deadlocking under
++periodic multicast transmit load (see upstream bug report for the full
++writeup). Not yet confirmed whether this is the same root cause manifesting
++at a different call site, or a related-but-distinct locking issue in the
++same function -- testing against real hardware to see whether this specific
++fix also resolves the periodic deadlock, not just the boot-time lockdep hit.
++
++--- a/econet_port.c
+++++ b/econet_port.c
++@@ -153,11 +153,12 @@ static int en75_dev_open(struct net_device *dev)
++ 	// 	airoha_fe_clear(qdma->eth, REG_GDM_INGRESS_CFG(port->id),
++ 	// 			GDM_STAG_EN_MASK);
++
++-	guard(spinlock)(&port->reg_lock);
++-	rlt = en75_rreg(&port->regs->rx_len_threshold);
++-	set_gdm_len_th_runt_len(&rlt, 60);
++-	set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + dev->mtu + ETH_FCS_LEN);
++-	en75_wreg(rlt, &port->regs->rx_len_threshold);
+++	scoped_guard(spinlock, &port->reg_lock) {
+++		rlt = en75_rreg(&port->regs->rx_len_threshold);
+++		set_gdm_len_th_runt_len(&rlt, 60);
+++		set_gdm_len_th_oversize_len(&rlt, ETH_HLEN + dev->mtu + ETH_FCS_LEN);
+++		en75_wreg(rlt, &port->regs->rx_len_threshold);
+++	}
++
++ 	return en75_qdma_use(port->qdma);
++ }
+diff --git a/package/kernel/econet-eth/patches/003-remove-unexpected-fport-print.patch b/package/kernel/econet-eth/patches/003-remove-unexpected-fport-print.patch
+new file mode 100644
+index 0000000000..b5d57bd43a
+--- /dev/null
++++ b/package/kernel/econet-eth/patches/003-remove-unexpected-fport-print.patch
+@@ -0,0 +1,30 @@
++From: local
++Subject: econet-eth: remove the "rx: on unexpected fport" print entirely
++
++CORRECTED RATIONALE (this patch previously rate-limited, then
++debug-leveled, this print as a hypothesis for the periodic full-router
++hang investigated in the qdma deadlock bug report; that hang's real
++cause is now confirmed to be an unmasked ERR_COHERENT IRQ storm, fixed
++separately in patch 004, and is unrelated to this print or its
++volume -- see that patch and the bug report for the actual root
++cause).
++
++This message was emitted by en75_get_sport_dev() for every received
++packet whose fport is neither GDM1 nor GDM2 (typically CPU-port
++loopback/reflected traffic). It is expected, benign, informational
++noise -- the packet is still delivered correctly either way, to
++ports[0], identically regardless of this check -- not an error
++condition worth keeping any trace of, so the check and its print are
++removed outright rather than merely down-leveled.
++
++--- a/econet_eth.c
+++++ b/econet_eth.c
++@@ -148,8 +148,6 @@ static struct net_device *en75_get_sport_dev(struct en75_eth_pvt *eth,
++ 	if (sport == ETX_FPORT_GDM2) {
++ 		return eth->ports[1];
++ 	} else {
++-		if (sport != ETX_FPORT_GDM1)
++-			dev_info(eth->pub.dev, "rx: on unexpected fport %d\n", sport);
++ 		return eth->ports[0];
++ 	}
++ }
+diff --git a/package/kernel/econet-eth/patches/004-fix-unmasked-error-irq-storm.patch b/package/kernel/econet-eth/patches/004-fix-unmasked-error-irq-storm.patch
+new file mode 100644
+index 0000000000..f298a795d2
+--- /dev/null
++++ b/package/kernel/econet-eth/patches/004-fix-unmasked-error-irq-storm.patch
+@@ -0,0 +1,83 @@
++From: local
++Subject: econet-eth: mask non-DONE IRQ purposes after they fire, not just DONE
++
++ROOT CAUSE CONFIRMED on real EN751627 hardware -- this is the actual
++cause of the periodic full-router hang investigated in the qdma
++deadlock bug report, not the reg_lock bug (patch 002, real but
++separate) and not the "rx: on unexpected fport 0" print rate (patch
++003, a red herring -- reverting that hypothesis is not necessary since
++the fix is harmless on its own, but it did not fix this).
++
++Confirmed via the driver's own debugfs interrupt counters
++(/sys/kernel/debug/econet_eth/qdma0/interrupts) while the router was
++hung and completely unresponsive on one CPU (but still answering
++hardware IRQs/IPIs -- confirmed via /proc/interrupts and a forced
++`echo l > /proc/sysrq-trigger` NMI backtrace, both showing the same
++CPU frozen at the same PC, inside handle_softirqs(), for 30+ minutes
++straight, immune to SIGKILL, immune to SIGSTOP):
++
++  count      irq  reg  bit  origin  chain  meaning
++  692542517  0    0    12   TX      0      ERR_COHERENT
++       522   0    0    1    RX      0      DONE
++       522   0    0    11   UNSPEC  -1     OVERFLOW
++
++692 million and climbing, against normal (double-digit/low-hundreds)
++counts for every legitimate RX/TX-done interrupt in the same window.
++/proc/interrupts corroborated this at the whole-line level: the
++econet_eth-0.0 IRQ alone had over 650 million hits, entirely on one
++CPU, versus a few hundred thousand for that CPU's own local timer
++over the same uptime -- roughly a quarter million interrupts/second,
++sustained, since shortly after boot.
++
++en75_init_final() deliberately enables (leaves unmasked) several IRQ
++purposes beyond plain RX/TX DONE, including IPS_ERR_COHERENT,
++IPS_OVERFLOW, IPS_NO_DSCP, IPS_LOW_DSCP, and the PON external-hardware
++interrupts -- clearly intended to be rare/exceptional conditions worth
++logging. But en75_irq_handler()'s dispatch loop only ever adds a bit
++to disable_int (masking it until something explicitly re-enables it,
++mirroring how DONE relies on NAPI to re-enable via
++en75_qdma_set_irqmask() once the poll completes) for
++IPS_DONE+IPSC_RX and IPS_DONE+IPSC_TX. Every other enabled purpose
++falls through to a plain dev_dbg_ratelimited() call and is never
++masked. If the underlying hardware condition for one of those other
++purposes is ever continuously true rather than a one-off event (as
++ERR_COHERENT/chain 0/TX is on this board), the interrupt re-fires as
++fast as the bus allows, forever -- and since dev_dbg_ratelimited() is
++compiled in but silent by default (no dynamic debug enabled), this
++happened with literally zero visible trace in dmesg/logread the whole
++time, despite completely wedging one CPU core permanently.
++
++Fix: mask (add to disable_int) every purpose that reaches the
++fallback branch too, exactly like the two DONE cases already do --
++the only difference being nothing re-enables these bits afterward
++(no NAPI-equivalent poll/re-arm exists for "rare error condition"
++purposes), which is the correct, conservative behavior for something
++that is only ever supposed to happen rarely: log it once (now at
++dev_warn_ratelimited so it is actually visible by default, instead of
++silent debug level), then leave it masked rather than let it
++potentially free-run. Also directly explains why RX still nominally
++worked throughout the hang (the RX-done path was never touched by
++this) and why the box stayed otherwise responsive (only the one CPU
++core handling this IRQ line was affected).
++
++Not yet confirmed why chain 0/TX hits a coherency error at all on
++this board -- that is a separate, deeper DMA/cache-coherency question
++this fix does not answer, only prevents from being catastrophic.
++
++--- a/econet_qdma.c
+++++ b/econet_qdma.c
++@@ -408,11 +408,12 @@ static irqreturn_t en75_irq_handler(int irq_num, void *dev_instance)
++ 				disable_int |= BIT(bit);
++ 				continue;
++ 			}
++-			dev_dbg_ratelimited(qdma->dev,
++-					    "%s IRQ from %s[%d]\n",
+++			dev_warn_ratelimited(qdma->dev,
+++					    "%s IRQ from %s[%d], masking\n",
++ 					    en75_irq_purpose_type_str(p.type),
++ 					    en75_irq_purpose_source_str(p.source),
++ 					    p.chain);
+++			disable_int |= BIT(bit);
++ 		}
++ 
++ 		irq->irqmask[i] &= ~disable_int;
+diff --git a/package/kernel/econet-eth/patches/005-fix-en751627-dma-descriptor-byte-order.patch b/package/kernel/econet-eth/patches/005-fix-en751627-dma-descriptor-byte-order.patch
+new file mode 100644
+index 0000000000..57348043bc
+--- /dev/null
++++ b/package/kernel/econet-eth/patches/005-fix-en751627-dma-descriptor-byte-order.patch
+@@ -0,0 +1,42 @@
++From: local
++Subject: econet-eth: enable descriptor byte swapping on big-endian EN751627
++
++Patch 001 copied the EN7528 setting based on reset-controller similarity
++and incorrectly described dscp_byte_swap as an IP DSCP/QoS option. This
++flag controls the byte order of DMA packet descriptors, including packet
++addresses, lengths and next-descriptor indices. The driver writes those
++fields in native CPU byte order.
++
++The EN751627 target has CONFIG_CPU_BIG_ENDIAN=y, like EN751221, whose
++descriptor-swap setting is true. EN7528 has CONFIG_CPU_LITTLE_ENDIAN=y.
++Upstream commit 90b6d9b2c0e024fb17cc6abe8ec306673011caeb ("en7528 little
++endian support") introduced the per-SoC flag in place of unconditional
++descriptor swapping. The qdma_regs.h accessor also identifies this as
++descriptor endian swapping used on big-endian machines.
++
++Enable descriptor swapping for EN751627. Keep the existing IRQ storm
++guard: suppressing repeated ERR_COHERENT interrupts does not repair the
++underlying DMA failure. Whether this correction resolves the observed
++LAN data-path failure still requires testing on the EX3301-T0.
++
++--- a/econet_eth.c
+++++ b/econet_eth.c
++@@ -430,15 +430,11 @@
++ };
++ 
++ /*
++- * UNTESTED GUESS: EN751627 shares en7528's scu/reset binding (both use
++- * airoha,en7523-scu / EN7523_* reset constants, confirmed from the actual
++- * devicetree source), so this copies en7528_soc_data's value rather than
++- * en751221's. dscp_byte_swap has not been verified against real EN751627
++- * hardware -- if DSCP/QoS marking comes out wrong on this SoC, this is the
++- * first thing to flip.
+++ * EN751627 uses native big-endian DMA descriptors, like EN751221.
+++ * DSCP here means descriptor; this setting does not control IP DSCP/QoS.
++  */
++ static const struct en75_soc_data en751627_soc_data = {
++-	.dscp_byte_swap = false,
+++	.dscp_byte_swap = true,
++ };
++ 
++ static const struct of_device_id of_en75_match[] = {
+diff --git a/package/system/fstools/patches/0001-mtd-identify-nand-without-oob-cleanmarkers-as-jffs2.patch b/package/system/fstools/patches/0001-mtd-identify-nand-without-oob-cleanmarkers-as-jffs2.patch
+new file mode 100644
+index 0000000000..8436ba596b
+--- /dev/null
++++ b/package/system/fstools/patches/0001-mtd-identify-nand-without-oob-cleanmarkers-as-jffs2.patch
+@@ -0,0 +1,11 @@
++--- a/libfstools/mtd.c
+++++ b/libfstools/mtd.c
++@@ -221,7 +221,7 @@ static int mtd_volume_identify(struct vo
++ 	    __be16_to_cpu(deadc0de >> 16) == 0x1985)
++ 		return FS_JFFS2;
++ 
++-	if (v->type == UBIVOLUME && deadc0de == 0xffffffff) {
+++	if ((v->type == UBIVOLUME || v->type == NANDFLASH) && deadc0de == 0xffffffff) {
++ 		return FS_JFFS2;
++ 	}
++ 
+diff --git a/target/linux/econet/base-files/etc/board.d/01_leds b/target/linux/econet/base-files/etc/board.d/01_leds
+index 7b1a405171..858eaa3db0 100644
+--- a/target/linux/econet/base-files/etc/board.d/01_leds
++++ b/target/linux/econet/base-files/etc/board.d/01_leds
+@@ -35,6 +35,19 @@ jiofiber,jcow414)
+ 	ucidef_set_led_netdev "lan3-green" "lan3" "mt7530-0:0b:green:lan-3" "lan3" "tx rx"
+ 	ucidef_set_led_netdev "lan4-green" "lan4" "mt7530-0:0c:green:lan-4" "lan4" "tx rx"
+ 	;;
++zyxel,ex3301-t0)
++	ucidef_set_led_default "power" "Power" "green:power" "1"
++	ucidef_set_led_netdev "internet" "Internet" "green:internet" "wan" "link tx rx"
++	ucidef_set_led_netdev "lan" "LAN Aggregate" "green:lan" "br-lan" "link tx rx"
++	ucidef_set_led_netdev "wan-eth" "WAN Ethernet" "green:wan" "wan" "link tx rx"
++	ucidef_set_led_wlan "wlan2g" "WLAN 2.4GHz" "green:wlan2g" "phy0tpt"
++	ucidef_set_led_wlan "wlan5g" "WLAN 5GHz" "green:wlan5g" "phy1tpt"
++	ucidef_set_led_netdev "lan1" "LAN1" "mt7530-0:0b:green:lan-1" "lan1" "link tx rx"
++	ucidef_set_led_netdev "lan2" "LAN2" "mt7530-0:0a:green:lan-2" "lan2" "link tx rx"
++	ucidef_set_led_netdev "lan3" "LAN3" "mt7530-0:09:green:lan-3" "lan3" "link tx rx"
++	ucidef_set_led_netdev "lan4" "LAN4" "mt7530-0:08:green:lan-4" "lan4" "link tx rx"
++	ucidef_set_led_netdev "wan-port" "WAN Port" "mt7530-0:0c:green:wan" "wan" "link tx rx"
++	;;
+ esac
+ 
+ board_config_flush
+diff --git a/target/linux/econet/base-files/etc/board.d/02_network b/target/linux/econet/base-files/etc/board.d/02_network
+index 8bb6b25b0b..1b88f7c266 100644
+--- a/target/linux/econet/base-files/etc/board.d/02_network
++++ b/target/linux/econet/base-files/etc/board.d/02_network
+@@ -14,6 +14,9 @@ econet_setup_interfaces()
+ 	jiofiber,jcow414)
+ 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
+ 		;;
++	zyxel,ex3301-t0)
++		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4" "wan"
++		;;
+ 	*)
+ 		# The remaining boards have no DSA switch driver yet.
+ 		ucidef_set_interface_lan "eth0"
+diff --git a/target/linux/econet/base-files/lib/preinit/81_mount_root_fallback b/target/linux/econet/base-files/lib/preinit/81_mount_root_fallback
+new file mode 100644
+index 0000000000..23650a43cd
+--- /dev/null
++++ b/target/linux/econet/base-files/lib/preinit/81_mount_root_fallback
+@@ -0,0 +1,15 @@
++check_rootfs_overlay() {
++	[ "$INITRAMFS" = "1" ] && return
++
++	# If the overlay mounted successfully, /etc is writable.
++	# If mounting failed (e.g. unformatted flash from stock or corrupted JFFS2),
++	# the rootfs remains read-only squashfs.
++	if ! touch /etc/.fs_writable 2>/dev/null; then
++		echo "Overlay mount failed, activating temporary RAM overlay..."
++		mount_root ram
++	else
++		rm -f /etc/.fs_writable
++	fi
++}
++
++boot_hook_add preinit_mount_root check_rootfs_overlay
+diff --git a/target/linux/econet/base-files/lib/upgrade/platform.sh b/target/linux/econet/base-files/lib/upgrade/platform.sh
+index 19c0072e63..0f84ea53b2 100644
+--- a/target/linux/econet/base-files/lib/upgrade/platform.sh
++++ b/target/linux/econet/base-files/lib/upgrade/platform.sh
+@@ -9,6 +9,17 @@ platform_check_image() {
+ 	jiofiber,jcow414)
+ 		return 0
+ 		;;
++	zyxel,ex3301-t0)
++		if fwtool -q -i /dev/null "$1"; then
++			return 0
++		fi
++		local magic=$(dd if="$1" bs=1 count=4 2>/dev/null)
++		if [ "$magic" = "2RDH" ]; then
++			return 0
++		fi
++		echo "Invalid image: missing OpenWrt metadata or 2RDH header"
++		return 1
++		;;
+ 	esac
+ 
+ 	return 1
+@@ -26,5 +37,10 @@ platform_do_upgrade() {
+ 		CI_KERNPART="tclinux_kernel"
+ 		nand_do_upgrade "$1"
+ 		;;
++	zyxel,ex3301-t0)
++		PART_NAME="tclinux"
++		MTD_ARGS="-e rootfs_data"
++		default_do_upgrade "$1"
++		;;
+ 	esac
+ }
+diff --git a/target/linux/econet/dts/en751627.dtsi b/target/linux/econet/dts/en751627.dtsi
+index 49015e4b22..3c8d0acf1b 100644
+--- a/target/linux/econet/dts/en751627.dtsi
++++ b/target/linux/econet/dts/en751627.dtsi
+@@ -243,4 +243,221 @@
+ 		interrupts = <GIC_SHARED 17 IRQ_TYPE_LEVEL_HIGH>;
+ 		usb3-lpm-capable;
+ 	};
++
++	/*
++	 * UNTESTED: added by inference from en7528.dtsi (same scu/reset
++	 * binding as this SoC) and from live probing of a Zyxel EX3301-T0
++	 * (see en751627_zyxel_ex3301-t0.dts for the per-port confirmation).
++	 * The gsw_phy0 reg (8) is extrapolated from the phy1..phy4 = 9..12
++	 * pattern on EN7528 boards and is NOT independently confirmed.
++	 */
++	ethernet: ethernet@1fb50000 {
++		compatible = "econet,en751627-eth";
++		reg = <0x1fb50000 0x8000>;
++
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		interrupt-parent = <&gic>;
++		interrupts = <GIC_SHARED 21 IRQ_TYPE_LEVEL_HIGH>,
++			     <GIC_SHARED 22 IRQ_TYPE_LEVEL_HIGH>;
++
++		resets = <&scu EN7523_FE_RST>,
++			 <&scu EN7523_FE_PDMA_RST>,
++			 <&scu EN7523_FE_QDMA_RST>,
++			 <&scu EN7523_XPON_MAC_RST>,
++			 <&scu EN7523_XPON_PHY_RST>;
++		reset-names = "fe", "qdma0", "qdma1",
++			      "xpon-mac", "xpon-phy";
++
++		status = "disabled";
++
++		gmac0: mac@0 {
++			compatible = "econet,eth-mac";
++			reg = <0>;
++			phy-mode = "internal";
++			status = "disabled";
++
++			fixed-link {
++				speed = <1000>;
++				full-duplex;
++				pause;
++			};
++		};
++
++		gmac1: mac@1 {
++			compatible = "econet,eth-mac";
++			reg = <1>;
++			phy-mode = "rgmii-rxid";
++			status = "disabled";
++		};
++	};
++
++	switch: ethernet-switch@1fb58000 {
++		compatible = "econet,en751627-switch";
++		reg = <0x1fb58000 0x8000>;
++		resets = <&scu EN7523_GSW_RST>;
++
++		status = "disabled";
++
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		ethernet-ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			gsw_port0: ethernet-port@0 {
++				reg = <0>;
++				phy-mode = "internal";
++				phy-handle = <&gsw_phy0>;
++				status = "disabled";
++			};
++
++			gsw_port1: ethernet-port@1 {
++				reg = <1>;
++				phy-mode = "internal";
++				phy-handle = <&gsw_phy1>;
++				status = "disabled";
++			};
++
++			gsw_port2: ethernet-port@2 {
++				reg = <2>;
++				phy-mode = "internal";
++				phy-handle = <&gsw_phy2>;
++				status = "disabled";
++			};
++
++			gsw_port3: ethernet-port@3 {
++				reg = <3>;
++				phy-mode = "internal";
++				phy-handle = <&gsw_phy3>;
++				status = "disabled";
++			};
++
++			gsw_port4: ethernet-port@4 {
++				reg = <4>;
++				phy-mode = "internal";
++				phy-handle = <&gsw_phy4>;
++				status = "disabled";
++			};
++
++			ethernet-port@6 {
++				reg = <6>;
++				ethernet = <&gmac0>;
++				phy-mode = "internal";
++
++				fixed-link {
++					speed = <1000>;
++					full-duplex;
++					pause;
++				};
++			};
++		};
++
++		mdio {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			gsw_phy0: ethernet-phy@8 {
++				compatible = "ethernet-phy-ieee802.3-c22";
++				reg = <8>;
++
++				leds {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					gsw_phy0_led0: led@0 {
++						reg = <0>;
++						status = "disabled";
++					};
++
++					gsw_phy0_led1: led@1 {
++						reg = <1>;
++						status = "disabled";
++					};
++				};
++			};
++
++			gsw_phy1: ethernet-phy@9 {
++				compatible = "ethernet-phy-ieee802.3-c22";
++				reg = <9>;
++
++				leds {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					gsw_phy1_led0: led@0 {
++						reg = <0>;
++						status = "disabled";
++					};
++
++					gsw_phy1_led1: led@1 {
++						reg = <1>;
++						status = "disabled";
++					};
++				};
++			};
++
++			gsw_phy2: ethernet-phy@a {
++				compatible = "ethernet-phy-ieee802.3-c22";
++				reg = <10>;
++
++				leds {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					gsw_phy2_led0: led@0 {
++						reg = <0>;
++						status = "disabled";
++					};
++
++					gsw_phy2_led1: led@1 {
++						reg = <1>;
++						status = "disabled";
++					};
++				};
++			};
++
++			gsw_phy3: ethernet-phy@b {
++				compatible = "ethernet-phy-ieee802.3-c22";
++				reg = <11>;
++
++				leds {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					gsw_phy3_led0: led@0 {
++						reg = <0>;
++						status = "disabled";
++					};
++
++					gsw_phy3_led1: led@1 {
++						reg = <1>;
++						status = "disabled";
++					};
++				};
++			};
++
++			gsw_phy4: ethernet-phy@c {
++				compatible = "ethernet-phy-ieee802.3-c22";
++				reg = <12>;
++
++				leds {
++					#address-cells = <1>;
++					#size-cells = <0>;
++
++					gsw_phy4_led0: led@0 {
++						reg = <0>;
++						status = "disabled";
++					};
++
++					gsw_phy4_led1: led@1 {
++						reg = <1>;
++						status = "disabled";
++					};
++				};
++			};
++		};
++	};
+ };
+diff --git a/target/linux/econet/dts/en751627_zyxel_ex3301-t0.dts b/target/linux/econet/dts/en751627_zyxel_ex3301-t0.dts
+index 2c23cce044..153c96cfa0 100644
+--- a/target/linux/econet/dts/en751627_zyxel_ex3301-t0.dts
++++ b/target/linux/econet/dts/en751627_zyxel_ex3301-t0.dts
+@@ -2,11 +2,21 @@
+ /dts-v1/;
+ 
+ #include "en751627.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/leds/common.h>
+ 
+ / {
+ 	model = "Zyxel EX3301-T0";
+ 	compatible = "zyxel,ex3301-t0", "econet,en751627";
+ 
++	aliases {
++		led-boot = &led_power_green;
++		led-failsafe = &led_power_red;
++		led-running = &led_power_green;
++		led-upgrade = &led_power_red;
++	};
++
+ 	memory@0 {
+ 		device_type = "memory";
+ 		reg = <0x00000000 0x10000000>;
+@@ -15,11 +25,94 @@
+ 	chosen {
+ 		stdout-path = "/serial@1fbf0000:115200";
+ 	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_power_green: power-green {
++			label = "green:power";
++			gpios = <&gpio0 8 GPIO_ACTIVE_HIGH>;
++			default-state = "on";
++		};
++
++		led_power_red: power-red {
++			label = "red:power";
++			gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led_internet_green: internet-green {
++			label = "green:internet";
++			gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
++			default-state = "off";
++		};
++
++		led_internet_red: internet-red {
++			label = "red:internet";
++			gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led_wlan24: wlan2g {
++			label = "green:wlan2g";
++			gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy0tpt";
++			default-state = "off";
++		};
++
++		led_wlan5: wlan5g {
++			label = "green:wlan5g";
++			gpios = <&gpio0 20 GPIO_ACTIVE_LOW>;
++			linux,default-trigger = "phy1tpt";
++			default-state = "off";
++		};
++
++		led_wps: wps {
++			label = "green:wps";
++			gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led_lan_agg: lan-agg {
++			label = "green:lan";
++			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++
++		led_wan_eth: wan-eth {
++			label = "green:wan";
++			gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
++			default-state = "off";
++		};
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		key-reset {
++			label = "reset";
++			gpios = <&gpio0 0 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++
++		key-wps {
++			label = "wps";
++			gpios = <&gpio0 16 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_WPS_BUTTON>;
++		};
++
++		key-wifi {
++			label = "wifi";
++			gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RFKILL>;
++		};
++	};
+ };
+ 
+ &nand {
+ 	status = "okay";
+ 	econet,bmt;
++	econet,bbt-table-size = <250>;
+ 
+ 	partitions {
+ 		compatible = "fixed-partitions";
+@@ -47,8 +140,6 @@
+ 		partition@80000 {
+ 			label = "tclinux";
+ 			reg = <0x80000 0x2800000>;
+-			read-only;
+-			econet,enable-remap;
+ 		};
+ 
+ 		/* Nested inside of tclinux */
+@@ -56,12 +147,12 @@
+ 			label = "rootfs";
+ 			reg = <0x480000 0x2400000>;
+ 			linux,rootfs;
+-			read-only;
+ 		};
+ 
+ 		partition@2880000 {
+ 			label = "tclinux_alt";
+ 			reg = <0x2880000 0x2620000>;
++			read-only;
+ 		};
+ 
+ 		partition@4ea0000 {
+@@ -115,3 +206,82 @@
+ 
+ 	/* Slot 1 is a second link to the same wifi chip */
+ };
++
++/*
++ * Port map empirically confirmed by live-testing a real EX3301-T0: cable
++ * moved one physical port at a time, /proc/tc3162/gsw_link_st read after
++ * each move. Switch port 6 (CPU) needs no override -- it has no "status"
++ * property in en751627.dtsi so it defaults to enabled, matching that it
++ * was always up in testing regardless of what was plugged in.
++ */
++&ethernet {
++	status = "okay";
++};
++
++&gmac0 {
++	status = "okay";
++};
++
++&switch {
++	status = "okay";
++};
++
++&gsw_port3 {
++	status = "okay";
++	label = "lan1";
++};
++
++&gsw_port2 {
++	status = "okay";
++	label = "lan2";
++};
++
++&gsw_port1 {
++	status = "okay";
++	label = "lan3";
++};
++
++&gsw_port0 {
++	status = "okay";
++	label = "lan4";
++};
++
++&gsw_port4 {
++	status = "okay";
++	label = "wan";
++};
++
++&gsw_phy3_led0 {
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <1>;
++	status = "okay";
++};
++
++&gsw_phy2_led0 {
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <2>;
++	status = "okay";
++};
++
++&gsw_phy1_led0 {
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <3>;
++	status = "okay";
++};
++
++&gsw_phy0_led0 {
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_LAN;
++	function-enumerator = <4>;
++	status = "okay";
++};
++
++&gsw_phy4_led0 {
++	color = <LED_COLOR_ID_GREEN>;
++	function = LED_FUNCTION_WAN;
++	status = "okay";
++};
++
+diff --git a/target/linux/econet/en751627/config-6.18 b/target/linux/econet/en751627/config-6.18
+index 41e2cd78bd..d0ea517515 100644
+--- a/target/linux/econet/en751627/config-6.18
++++ b/target/linux/econet/en751627/config-6.18
+@@ -95,7 +95,8 @@ CONFIG_IRQ_FORCED_THREADING=y
+ CONFIG_IRQ_MIPS_CPU=y
+ CONFIG_IRQ_MSI_LIB=y
+ CONFIG_IRQ_WORK=y
+-# CONFIG_JFFS2_FS is not set
++CONFIG_JFFS2_FS=y
++CONFIG_JFFS2_FS_WRITEBUFFER=y
+ CONFIG_LEDS_GPIO=y
+ CONFIG_LIBFDT=y
+ CONFIG_LOCK_DEBUGGING_SUPPORT=y
+@@ -135,6 +136,12 @@ CONFIG_MTD_UBI_BLOCK=y
+ CONFIG_MTD_UBI_WL_THRESHOLD=4096
+ CONFIG_NEED_DMA_MAP_STATE=y
+ CONFIG_NEED_SRCU_NMI_SAFE=y
++CONFIG_MEDIATEK_GE_SOC_PHY=y
++CONFIG_NET_DSA=y
++CONFIG_NET_DSA_MT7530=y
++# CONFIG_NET_DSA_MT7530_MDIO is not set
++CONFIG_NET_DSA_MT7530_MMIO=y
++CONFIG_NET_DSA_TAG_MTK=y
+ CONFIG_NET_EGRESS=y
+ CONFIG_NET_FLOW_LIMIT=y
+ CONFIG_NET_INGRESS=y
+@@ -232,4 +239,5 @@ CONFIG_ZLIB_DEFLATE=y
+ CONFIG_ZLIB_INFLATE=y
+ CONFIG_ZSTD_COMMON=y
+ CONFIG_ZSTD_COMPRESS=y
++CONFIG_PHYLIB_LEDS=y
+ CONFIG_ZSTD_DECOMPRESS=y
+diff --git a/target/linux/econet/files/drivers/mtd/nand/en75_bmt.c b/target/linux/econet/files/drivers/mtd/nand/en75_bmt.c
+index 14dfe055ef..4571a7fd53 100644
+--- a/target/linux/econet/files/drivers/mtd/nand/en75_bmt.c
++++ b/target/linux/econet/files/drivers/mtd/nand/en75_bmt.c
+@@ -327,6 +327,19 @@ static int reserve_block_count(const struct en75_bmt_m *ctx)
+ 	return ctx->mtk->total_blks - ctx->reserve_area_begin;
+ }
+ 
++static bool is_block_in_bmt_or_bbt(const struct en75_bmt_m *ctx, u16 block)
++{
++	for (int i = 0; i < ctx->bmt.header.size; i++) {
++		if (ctx->bmt.table[i].from == block || ctx->bmt.table[i].to == block)
++			return true;
++	}
++	for (int i = 0; i < ctx->bbt.header.size; i++) {
++		if (ctx->bbt.table[i] == block)
++			return true;
++	}
++	return false;
++}
++
+ /* return a block_info or error pointer */
+ static struct block_info *find_available_block(const struct en75_bmt_m *ctx, bool start_from_end)
+ {
+@@ -343,7 +356,8 @@ static struct block_info *find_available_block(const struct en75_bmt_m *ctx, boo
+ 		d = -1;
+ 	}
+ 	for (; i < limit && i >= 0; i += d) {
+-		if (ctx->rblocks[i].status == BS_AVAILABLE)
++		if (ctx->rblocks[i].status == BS_AVAILABLE &&
++		    !is_block_in_bmt_or_bbt(ctx, ctx->rblocks[i].index.index))
+ 			return &ctx->rblocks[i];
+ 	}
+ 	return ERR_PTR(-ENOSPC);
+@@ -590,6 +604,7 @@ static int w_sync_tables(struct en75_bmt_m *ctx)
+ 			log_pfx, new_bmt_block->index.index);
+ 		mark_for_erasure(ctx, BS_BMT);
+ 		new_bmt_block->status = BS_BMT;
++		w_erase_pending(ctx);
+ 
+ 		ctx->bmt_dirty -= dirty;
+ 		WARN_ON(ctx->bmt_dirty);
+@@ -1006,6 +1021,8 @@ static int r_scan_reserve(struct en75_bmt_m *ctx)
+ 	int rblock = 0;
+ 	int rblocks_available = 0;
+ 	u8 fdm[4];
++	bool found_bmt = false;
++	bool found_bbt = false;
+ 
+ 	for (; cursor > 0; cursor--) {
+ 		int ret;
+@@ -1042,11 +1059,23 @@ static int r_scan_reserve(struct en75_bmt_m *ctx)
+ 			pr_debug("%s: found mapped block %d\n", log_pfx, cursor);
+ 			bif.status = BS_MAPPED;
+ 		} else if (!try_parse_bbt(&ctx->bbt, data_buf, pg_size, ctx->bbt_table_size)) {
+-			pr_info("%s: found BBT in block %d\n", log_pfx, cursor);
+-			bif.status = BS_BBT;
++			if (found_bbt) {
++				pr_info("%s: skipping older BBT in block %d, marking for erase\n", log_pfx, cursor);
++				bif.status = BS_NEED_ERASE;
++			} else {
++				pr_info("%s: found BBT in block %d\n", log_pfx, cursor);
++				bif.status = BS_BBT;
++				found_bbt = true;
++			}
+ 		} else if (!try_parse_bmt(&ctx->bmt, data_buf, pg_size)) {
+-			pr_info("%s: found BMT in block %d\n", log_pfx, cursor);
+-			bif.status = BS_BMT;
++			if (found_bmt) {
++				pr_info("%s: skipping older BMT in block %d, marking for erase\n", log_pfx, cursor);
++				bif.status = BS_NEED_ERASE;
++			} else {
++				pr_info("%s: found BMT in block %d\n", log_pfx, cursor);
++				bif.status = BS_BMT;
++				found_bmt = true;
++			}
+ 		} else if (block_is_erased(data_buf, pg_size, fdm, sizeof(fdm))) {
+ 			pr_debug("%s: found available block %d\n", log_pfx, cursor);
+ 			bif.status = BS_AVAILABLE;
+@@ -1332,6 +1361,24 @@ static int w_init(struct en75_bmt_m *ctx, struct device_node *np)
+ 			return ret;
+ 	}
+ 
++	{
++		int rblocks = reserve_block_count(ctx);
++		for (int i = 0; i < ctx->bmt.header.size; i++) {
++			for (int j = 0; j < rblocks; j++) {
++				if (ctx->rblocks[j].index.index == ctx->bmt.table[i].to)
++					ctx->rblocks[j].status = BS_MAPPED;
++				if (ctx->rblocks[j].index.index == ctx->bmt.table[i].from)
++					ctx->rblocks[j].status = BS_BAD;
++			}
++		}
++		for (int i = 0; i < ctx->bbt.header.size; i++) {
++			for (int j = 0; j < rblocks; j++) {
++				if (ctx->rblocks[j].index.index == ctx->bbt.table[i])
++					ctx->rblocks[j].status = BS_BAD;
++			}
++		}
++	}
++
+ 	pr_info("%s: blocks: total: %d, user: %d, factory_bad: %d, worn: %d reserve: %d\n",
+ 		log_pfx,
+ 		ctx->mtk->total_blks,
+diff --git a/target/linux/econet/image/en751627.mk b/target/linux/econet/image/en751627.mk
+index 299b947703..4fcd6d4c90 100644
+--- a/target/linux/econet/image/en751627.mk
++++ b/target/linux/econet/image/en751627.mk
+@@ -4,8 +4,10 @@ define Device/zyxel_ex3301-t0
+   DEVICE_VENDOR := Zyxel
+   DEVICE_MODEL := EX3301-T0
+   DEVICE_DTS := en751627_zyxel_ex3301-t0
+-  IMAGES := tclinux.trx
++  SUPPORTED_DEVICES := zyxel,ex3301-t0
++  IMAGES := tclinux.trx sysupgrade.bin
+   IMAGE/tclinux.trx := append-kernel | lzma | tclinux-trx
+-  DEVICE_PACKAGES := kmod-usb3 kmod-mt7915e kmod-mt7915-firmware
++  IMAGE/sysupgrade.bin := append-kernel | lzma | tclinux-trx | append-metadata
++  DEVICE_PACKAGES := kmod-usb3 kmod-econet-eth kmod-mt7915e kmod-mt7915-firmware
+ endef
+ TARGET_DEVICES += zyxel_ex3301-t0
+diff --git a/target/linux/econet/patches-6.18/916-net-dsa-mt7530-add-en751627-support.patch b/target/linux/econet/patches-6.18/916-net-dsa-mt7530-add-en751627-support.patch
+new file mode 100644
+index 0000000000..038404a8d4
+--- /dev/null
++++ b/target/linux/econet/patches-6.18/916-net-dsa-mt7530-add-en751627-support.patch
+@@ -0,0 +1,113 @@
++From: local
++Subject: net: dsa: mt7530: add EN751627 support
++
++UNTESTED / locally authored, not upstream. Mirrors 781-...-add-en7528-support.patch
++exactly (same switch core, same MMIO glue, same reset sequence and PHY indirect
++access registers), with one real difference: on the Zyxel EX3301-T0 (EN751627),
++all five user ports (0-4) are wired out to physical jacks, not just 1-4 like the
++EN7528 boards this was modeled on. Port 0 is a real, working LAN port on this
++board -- confirmed by live-plugging a cable into it one port at a time and
++watching /proc/tc3162/gsw_link_st change on the vendor firmware (see
++target/linux/econet/dts/en751627_zyxel_ex3301-t0.dts for the full port map).
++Everything else (CPU port 6 at fixed 1000Mbps, EEE disabled per the same
++instability concern EN7528 documented, indirect PHY access) is assumed
++identical since it's the same switch IP, not independently verified.
++
++Depends on 781-v7.3-net-dsa-mt7530-add-en7528-support.patch (uses ID_EN7528).
++
++--- a/drivers/net/dsa/mt7530.h
+++++ b/drivers/net/dsa/mt7530.h
++@@ -22,6 +22,7 @@ enum mt753x_id {
++ 	ID_EN7581 = 4,
++ 	ID_AN7583 = 5,
++ 	ID_EN7528 = 6,
+++	ID_EN751627 = 7,
++ };
++ 
++ #define	NUM_TRGMII_CTRL			5
++--- a/drivers/net/dsa/mt7530-mmio.c
+++++ b/drivers/net/dsa/mt7530-mmio.c
++@@ -14,6 +14,7 @@ static const struct of_device_id mt7988_
++ 	{ .compatible = "airoha,an7583-switch", .data = &mt753x_table[ID_AN7583], },
++ 	{ .compatible = "airoha,en7581-switch", .data = &mt753x_table[ID_EN7581], },
++ 	{ .compatible = "econet,en7528-switch", .data = &mt753x_table[ID_EN7528], },
+++	{ .compatible = "econet,en751627-switch", .data = &mt753x_table[ID_EN751627], },
++ 	{ .compatible = "mediatek,mt7988-switch", .data = &mt753x_table[ID_MT7988], },
++ 	{ /* sentinel */ },
++ };
++--- a/drivers/net/dsa/mt7530.c
+++++ b/drivers/net/dsa/mt7530.c
++@@ -2853,6 +2853,38 @@ static void en7528_mac_port_get_caps(str
++ 	}
++ }
++ 
+++/*
+++ * UNTESTED: EN751627 uses the same switch core as EN7528, but on the Zyxel
+++ * EX3301-T0 all five user ports (0-4) are wired out, not just 1-4 -- port 0
+++ * is a real LAN port on this board (confirmed by live-plugging cables and
+++ * reading /proc/tc3162/gsw_link_st on the vendor firmware, see
+++ * en751627_zyxel_ex3301-t0.dts for the exact port map). Otherwise identical
+++ * to en7528_mac_port_get_caps.
+++ */
+++static void en751627_mac_port_get_caps(struct dsa_switch *ds, int port,
+++				     struct phylink_config *config)
+++{
+++	switch (port) {
+++	/* Ports which are connected to switch PHYs. There is no MII pinout. */
+++	case 0 ... 4:
+++		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+++			  config->supported_interfaces);
+++
+++		config->mac_capabilities |= MAC_10 | MAC_100 | MAC_1000FD;
+++		break;
+++
+++	/* Port 6 is connected to SoC's GMAC at 1000 Mbps full duplex. There
+++	 * is no MII pinout.
+++	 */
+++	case 6:
+++		__set_bit(PHY_INTERFACE_MODE_INTERNAL,
+++			  config->supported_interfaces);
+++
+++		config->mac_capabilities |= MAC_1000FD;
+++		break;
+++	}
+++}
+++
++ static void
++ mt7530_mac_config(struct dsa_switch *ds, int port, unsigned int mode,
++ 		  phy_interface_t interface)
++@@ -3053,7 +3085,7 @@ static void mt753x_phylink_get_caps(stru
++ 	 * phylink disables EEE on these PHYs and refuses to enable it from
++ 	 * userspace.
++ 	 */
++-	if (priv->id != ID_EN7528 &&
+++	if (priv->id != ID_EN7528 && priv->id != ID_EN751627 &&
++ 	    config->mac_capabilities & (MAC_100FD | MAC_1000FD)) {
++ 		u32 eeecr = mt7530_read(priv, MT753X_PMEEECR_P(port));
++ 
++@@ -3196,7 +3228,7 @@ mt753x_conduit_state_change(struct dsa_s
++ 	 * interface is up.
++ 	 */
++ 	if (priv->id != ID_MT7530 && priv->id != ID_MT7621 &&
++-	    priv->id != ID_EN7528)
+++	    priv->id != ID_EN7528 && priv->id != ID_EN751627)
++ 		return;
++ 
++ 	mask = BIT(cpu_dp->index);
++@@ -3409,6 +3441,16 @@ const struct mt753x_info mt753x_table[]
++ 		.phy_write_c45 = mt7531_ind_c45_phy_write,
++ 		.mac_port_get_caps = en7528_mac_port_get_caps,
++ 	},
+++	[ID_EN751627] = {
+++		.id = ID_EN751627,
+++		.pcs_ops = &mt7530_pcs_ops,
+++		.sw_setup = mt7988_setup,
+++		.phy_read_c22 = mt7531_ind_c22_phy_read,
+++		.phy_write_c22 = mt7531_ind_c22_phy_write,
+++		.phy_read_c45 = mt7531_ind_c45_phy_read,
+++		.phy_write_c45 = mt7531_ind_c45_phy_write,
+++		.mac_port_get_caps = en751627_mac_port_get_caps,
+++	},
++ };
++ EXPORT_SYMBOL_GPL(mt753x_table);
++ 
+diff --git a/target/linux/econet/patches-6.18/917-phy-mediatek-accept-mt7988-phy-at-addr-8-12.patch b/target/linux/econet/patches-6.18/917-phy-mediatek-accept-mt7988-phy-at-addr-8-12.patch
+new file mode 100644
+index 0000000000..f438205593
+--- /dev/null
++++ b/target/linux/econet/patches-6.18/917-phy-mediatek-accept-mt7988-phy-at-addr-8-12.patch
+@@ -0,0 +1,140 @@
++From: local
++Subject: net: phy: mediatek: accept MT7988-ID PHYs wired at MDIO address 8-12 and fix LED polarity and blinking
++
++Widen mt7988_phy_probe()'s address acceptance to also cover MDIO addresses 8-12
++(used on EN751627 SoC), map to normalized 0-4 index in shared priv array,
++enable LED BCR clock, mode, and external control (0x8009), configure on and
++blink durations (0x0c00, 0x1400), initialize active-low polarity and set
++hardware link/activity rules.
++
++--- a/drivers/net/phy/mediatek/mtk-ge-soc.c
+++++ b/drivers/net/phy/mediatek/mtk-ge-soc.c
++@@ -328,6 +328,8 @@
++ #define MTK_PHY_LED_BCR				0x21
++ #define   MTK_PHY_LED_BCR_CLK_EN		BIT(3)
++ #define   MTK_PHY_LED_BCR_EXT_CTRL		BIT(15)
+++#define MTK_PHY_LED_DUR_ON			0x22
+++#define MTK_PHY_LED_DUR_BLINK			0x23
++ 
++ #define MTK_PHY_RG_BG_RASEL			0x115
++ #define   MTK_PHY_RG_BG_RASEL_MASK		GENMASK(2, 0)
++@@ -383,7 +385,7 @@ enum CAL_MODE {
++ 
++ struct mtk_socphy_shared {
++ 	u32			boottrap;
++-	struct mtk_socphy_priv	priv[4];
+++	struct mtk_socphy_priv	priv[5];
++ };
++ 
++ /* One calibration cycle consists of:
++@@ -1172,6 +1174,9 @@ static int mt798x_phy_calibration(struct
++ 	if (IS_ERR(cell)) {
++ 		if (PTR_ERR(cell) == -EPROBE_DEFER)
++ 			return PTR_ERR(cell);
+++		phydev_warn(phydev,
+++			    "no phy-cal-data nvmem cell (err=%ld), running UNCALIBRATED\n",
+++			    PTR_ERR(cell));
++ 		return 0;
++ 	}
++ 
++@@ -1180,6 +1185,8 @@ static int mt798x_phy_calibration(struct
++ 	if (IS_ERR(buf))
++ 		return PTR_ERR(buf);
++ 
+++	phydev_warn(phydev, "phy-cal-data nvmem cell found, applying calibration\n");
+++
++ 	if (!buf[0] || !buf[1] || !buf[2] || !buf[3] || len < 4 * sizeof(u32)) {
++ 		phydev_err(phydev, "invalid efuse data\n");
++ 		ret = -EINVAL;
++@@ -1285,6 +1292,12 @@ static int mt798x_phy_led_hw_control_get
++ static int mt798x_phy_led_hw_control_set(struct phy_device *phydev, u8 index,
++ 					 unsigned long rules)
++ {
+++	if (phydev->mdio.addr >= 8 && phydev->mdio.addr <= 12) {
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_BCR, 0x8009);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_DUR_ON, 0x0c00);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_DUR_BLINK, 0x1400);
+++	}
+++
++ 	return mtk_phy_led_hw_ctrl_set(phydev, index, rules,
++ 				       MTK_GPHY_LED_ON_SET,
++ 				       MTK_GPHY_LED_RX_BLINK_SET,
++@@ -1296,6 +1309,9 @@ static bool mt7988_phy_led_get_polarity(
++ 	struct mtk_socphy_shared *priv = phy_package_get_priv(phydev);
++ 	u32 polarities;
++ 
+++	if (phydev->mdio.addr >= 8 && phydev->mdio.addr <= 12)
+++		return true;
+++
++ 	if (led_num == 0)
++ 		polarities = ~(priv->boottrap);
++ 	else
++@@ -1352,8 +1368,14 @@ static int mt7988_phy_probe_shared(struc
++ 	 * set LED polarity for each of the LED0.
++ 	 */
++ 	pio_np = of_parse_phandle(np, "mediatek,pio", 0);
++-	if (!pio_np)
++-		return -ENODEV;
+++	if (!pio_np) {
+++		/* Not present on SoCs that don't bootstrap configuration
+++		 * through the PHY LED pins (e.g. EN751627) -- fall back to
+++		 * a neutral boottrap value instead of failing probe.
+++		 */
+++		shared->boottrap = 0;
+++		return 0;
+++	}
++ 
++ 	regmap = device_node_to_regmap(pio_np);
++ 	of_node_put(pio_np);
++@@ -1374,10 +1396,33 @@ static int mt7988_phy_probe(struct phy_d
++ {
++ 	struct mtk_socphy_shared *shared;
++ 	struct mtk_socphy_priv *priv;
+++	unsigned int idx;
++ 	int err;
++ 
++-	if (phydev->mdio.addr > 3)
+++	if (phydev->mdio.addr <= 3) {
+++		idx = phydev->mdio.addr;
+++	} else if (phydev->mdio.addr >= 8 && phydev->mdio.addr <= 12) {
+++		/* Some SoCs (e.g. Airoha/EcoNet EN751627) integrate the same
+++		 * MT7988-identifying PHY silicon but wire it up starting at
+++		 * MDIO address 8 instead of 0.
+++		 */
+++		idx = phydev->mdio.addr - 8;
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_BCR, 0x8009);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_DUR_ON, 0x0c00);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED_DUR_BLINK, 0x1400);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED0_ON_CTRL,
+++			      MTK_PHY_LED_ON_ENABLE |
+++			      MTK_PHY_LED_ON_POLARITY |
+++			      MTK_GPHY_LED_ON_SET);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED0_BLINK_CTRL, 0x003f);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED1_ON_CTRL,
+++			      MTK_PHY_LED_ON_ENABLE |
+++			      MTK_PHY_LED_ON_POLARITY |
+++			      MTK_GPHY_LED_ON_SET);
+++		phy_write_mmd(phydev, MDIO_MMD_VEND2, MTK_PHY_LED1_BLINK_CTRL, 0x003f);
+++	} else {
++ 		return -EINVAL;
+++	}
++ 
++ 	err = devm_phy_package_join(&phydev->mdio.dev, phydev, 0,
++ 				    sizeof(struct mtk_socphy_shared));
++@@ -1391,7 +1436,7 @@ static int mt7988_phy_probe(struct phy_d
++ 	}
++ 
++ 	shared = phy_package_get_priv(phydev);
++-	priv = &shared->priv[phydev->mdio.addr];
+++	priv = &shared->priv[idx];
++ 
++ 	phydev->priv = priv;
++ 
++@@ -1526,6 +1571,7 @@ static struct phy_driver mtk_socphy_driv
++ 		.led_hw_is_supported = mt798x_phy_led_hw_is_supported,
++ 		.led_hw_control_set = mt798x_phy_led_hw_control_set,
++ 		.led_hw_control_get = mt798x_phy_led_hw_control_get,
+++		.led_polarity_set = an7581_phy_led_polarity_set,
++ 	},
++ 	{
++ 		PHY_ID_MATCH_EXACT(MTK_GPHY_ID_EN7528),
+diff --git a/target/linux/econet/patches-6.18/920-net-dsa-mt7530-skip-reset-for-en751627.patch b/target/linux/econet/patches-6.18/920-net-dsa-mt7530-skip-reset-for-en751627.patch
+new file mode 100644
+index 0000000000..a44264cbc0
+--- /dev/null
++++ b/target/linux/econet/patches-6.18/920-net-dsa-mt7530-skip-reset-for-en751627.patch
+@@ -0,0 +1,40 @@
++From: local
++Subject: net: dsa: mt7530: skip reset pulse in mt7988_setup for EN751627
++
++ID_EN751627 uses mt7988_setup, not mt7530_setup.
++This patch skips reset_control_assert and SYS_CTRL_PHY_RST in mt7988_setup
++for ID_EN751627 to avoid resetting switch PHY hardware initialized by bootloader.
++
++--- a/drivers/net/dsa/mt7530.c
+++++ b/drivers/net/dsa/mt7530.c
++@@ -3298,10 +3298,12 @@ static int mt7988_setup(struct dsa_switc
++ 	struct mt7530_priv *priv = ds->priv;
++ 
++ 	/* Reset the switch */
++-	reset_control_assert(priv->rstc);
++-	usleep_range(20, 50);
++-	reset_control_deassert(priv->rstc);
++-	usleep_range(20, 50);
+++	if (priv->id != ID_EN751627) {
+++		reset_control_assert(priv->rstc);
+++		usleep_range(20, 50);
+++		reset_control_deassert(priv->rstc);
+++		usleep_range(20, 50);
+++	}
++ 
++ 	/* AN7583 require additional tweak to CONN_CFG */
++ 	if (priv->id == ID_AN7583)
++@@ -3315,7 +3317,12 @@ static int mt7988_setup(struct dsa_switc
++ 			   FIELD_PREP(AN7583_CSR_ETHER_AFE_PWD, 0));
++ 
++ 	/* Reset the switch PHYs */
++-	mt7530_write(priv, MT7530_SYS_CTRL, SYS_CTRL_PHY_RST);
+++	if (priv->id != ID_EN751627) {
+++		mt7530_write(priv, MT7530_SYS_CTRL, SYS_CTRL_PHY_RST);
+++	} else {
+++		mt7530_write(priv, MT7530_LED_EN, 0x77777);
+++		mt7530_write(priv, MT7530_LED_IO_MODE, 0x77777);
+++	}
++ 
++ 	return mt7531_setup_common(ds);
++ }
+diff --git a/target/linux/econet/patches-6.18/950-jffs2-handle-bad-blocks-on-scan.patch b/target/linux/econet/patches-6.18/950-jffs2-handle-bad-blocks-on-scan.patch
+new file mode 100644
+index 0000000000..6c2d980278
+--- /dev/null
++++ b/target/linux/econet/patches-6.18/950-jffs2-handle-bad-blocks-on-scan.patch
+@@ -0,0 +1,97 @@
++--- a/fs/jffs2/os-linux.h
+++++ b/fs/jffs2/os-linux.h
++@@ -108,7 +108,7 @@ static inline void jffs2_init_inode_info
++ #define jffs2_can_mark_obsolete(c) (c->mtd->flags & (MTD_BIT_WRITEABLE))
++ #endif
++ 
++-#define jffs2_cleanmarker_oob(c) (c->mtd->type == MTD_NANDFLASH)
+++#define jffs2_cleanmarker_oob(c) (0)
++ 
++ #define jffs2_wbuf_dirty(c) (!!(c)->wbuf_len)
++ 
++--- a/fs/jffs2/fs.c
+++++ b/fs/jffs2/fs.c
++@@ -687,7 +687,7 @@ struct jffs2_inode_info *jffs2_gc_fetch_
++ static int jffs2_flash_setup(struct jffs2_sb_info *c) {
++ 	int ret = 0;
++ 
++-	if (jffs2_cleanmarker_oob(c)) {
+++	if (c->mtd->type == MTD_NANDFLASH) {
++ 		/* NAND flash... do setup accordingly */
++ 		ret = jffs2_nand_flash_setup(c);
++ 		if (ret)
++@@ -720,7 +720,7 @@ static int jffs2_flash_setup(struct jffs
++ 
++ void jffs2_flash_cleanup(struct jffs2_sb_info *c) {
++ 
++-	if (jffs2_cleanmarker_oob(c)) {
+++	if (c->mtd->type == MTD_NANDFLASH) {
++ 		jffs2_nand_flash_cleanup(c);
++ 	}
++ 
++--- a/fs/jffs2/erase.c
+++++ b/fs/jffs2/erase.c
++@@ -173,7 +173,7 @@ static void jffs2_erase_failed(struct jf
++ {
++ 	/* For NAND, if the failure did not occur at the device level for a
++ 	   specific physical page, don't bother updating the bad block table. */
++-	if (jffs2_cleanmarker_oob(c) && (bad_offset != (uint32_t)MTD_FAIL_ADDR_UNKNOWN)) {
+++	if ((c->mtd->type == MTD_NANDFLASH || mtd_can_have_bb(c->mtd)) && (bad_offset != (uint32_t)MTD_FAIL_ADDR_UNKNOWN)) {
++ 		/* We had a device-level failure to erase.  Let's see if we've
++ 		   failed too many times. */
++ 		if (!jffs2_write_nand_badblock(c, jeb, bad_offset)) {
++--- a/fs/jffs2/scan.c
+++++ b/fs/jffs2/scan.c
++@@ -113,7 +113,7 @@ int jffs2_scan_medium(struct jffs2_sb_in
++ 	if (!flashbuf) {
++ 		/* For NAND it's quicker to read a whole eraseblock at a time,
++ 		   apparently */
++-		if (jffs2_cleanmarker_oob(c))
+++		if (c->mtd->type == MTD_NANDFLASH)
++ 			try_size = c->sector_size;
++ 		else
++ 			try_size = PAGE_SIZE;
++@@ -157,8 +157,15 @@ int jffs2_scan_medium(struct jffs2_sb_in
++ 			ret = jffs2_scan_eraseblock(c, jeb, buf_size?flashbuf:(flashbuf+jeb->offset),
++ 							buf_size, s);
++ 
++-		if (ret < 0)
++-			goto out;
+++		if (ret < 0) {
+++			if (ret == -EBADMSG || ret == -EIO) {
+++				pr_warn("jffs2: unreadable block at %#08x (error %d), scheduling for erase\n",
+++					jeb->offset, ret);
+++				ret = BLK_STATE_ALLDIRTY;
+++			} else {
+++				goto out;
+++			}
+++		}
++ 
++ 		jffs2_dbg_acct_paranoia_check_nolock(c, jeb);
++ 
++@@ -271,11 +278,8 @@ int jffs2_scan_medium(struct jffs2_sb_in
++ 	if (c->nr_erasing_blocks) {
++ 		if (!c->used_size && !c->unchecked_size &&
++ 			((c->nr_free_blocks+empty_blocks+bad_blocks) != c->nr_blocks || bad_blocks == c->nr_blocks)) {
++-			pr_notice("Cowardly refusing to erase blocks on filesystem with no valid JFFS2 nodes\n");
++-			pr_notice("empty_blocks %d, bad_blocks %d, c->nr_blocks %d\n",
++-				  empty_blocks, bad_blocks, c->nr_blocks);
++-			ret = -EIO;
++-			goto out;
+++			pr_notice("jffs2: no valid nodes found, auto-formatting %d eraseblocks\n",
+++				  c->nr_erasing_blocks);
++ 		}
++ 		spin_lock(&c->erase_completion_lock);
++ 		jffs2_garbage_collect_trigger(c);
++@@ -469,6 +473,11 @@ static int jffs2_scan_eraseblock (struct
++ 
++ 	jffs2_dbg(1, "%s(): Scanning block at 0x%x\n", __func__, ofs);
++ 
+++	if (c->mtd->type == MTD_NANDFLASH || mtd_can_have_bb(c->mtd)) {
+++		if (mtd_block_isbad(c->mtd, jeb->offset))
+++			return BLK_STATE_BADBLOCK;
+++	}
+++
++ #ifdef CONFIG_JFFS2_FS_WRITEBUFFER
++ 	if (jffs2_cleanmarker_oob(c)) {
++ 		int ret;
+diff --git a/target/linux/generic/files/drivers/mtd/nand/mtk_bmt.c b/target/linux/generic/files/drivers/mtd/nand/mtk_bmt.c
+index 66a82dd2d0..8d0638b906 100644
+--- a/target/linux/generic/files/drivers/mtd/nand/mtk_bmt.c
++++ b/target/linux/generic/files/drivers/mtd/nand/mtk_bmt.c
+@@ -162,6 +162,7 @@ mtk_bmt_read(struct mtd_info *mtd, loff_t from,
+ 
+ 		from += cur_ops.len;
+ 		retry_count = 0;
++		ret = 0;
+ 	}
+ 
+ out:
+-- 
+2.55.0
+
