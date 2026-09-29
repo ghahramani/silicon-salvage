@@ -5,7 +5,7 @@ import time
 
 HOST = os.environ.get("ROUTER_IP", "192.168.1.1")
 USER = os.environ.get("ROUTER_USER", "admin")
-PWD = os.environ.get("ROUTER_PASS", "Haikui_V2")
+PWD = os.environ.get("ROUTER_PASS", "")
 
 
 def scrub(d):
@@ -22,6 +22,8 @@ def scrub(d):
 
 class T:
     def __init__(self, host=HOST, user=USER, password=PWD):
+        if not password:
+            raise ValueError("Password required: set ROUTER_PASS environment variable or pass password argument")
         self.host = host
         self.user = user
         self.password = password

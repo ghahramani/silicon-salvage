@@ -12,7 +12,7 @@ def main():
     parser = argparse.ArgumentParser(description="Automate serial login on stock firmware")
     parser.add_argument("--port", default="/dev/ttyUSB0", help="Serial port (default: /dev/ttyUSB0)")
     parser.add_argument("--user", default="admin", help="Username (default: admin)")
-    parser.add_argument("--pass", dest="password", default="Haikui_V2", help="Password (default: Haikui_V2)")
+    parser.add_argument("--pass", dest="password", required=True, help="Console password (required)")
     args = parser.parse_args()
 
     fd = os.open(args.port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)

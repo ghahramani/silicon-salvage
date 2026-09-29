@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 import os, termios, select, time, sys
 
-ROOT = '/mnt/programming-ssd/projects/exploring/openwrt/zyxel'
-DEV = '/dev/ttyUSB0'
-LOG_PATH = ROOT + '/latest/artifacts/serial_live2.log'
+DEV = os.environ.get("SERIAL_DEV", "/dev/ttyUSB0")
+LOG_PATH = os.environ.get("SERIAL_LOG", "serial_boot.log")
 
 LOG = open(LOG_PATH, 'ab', buffering=0)
 
