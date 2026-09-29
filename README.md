@@ -4,7 +4,7 @@
 
 Millions of capable Wi-Fi 6 routers are treated as disposable e-waste once broadband contracts expire. Shackled by locked bootloaders, restricted ISP management portals, and undocumented silicon architectures, these powerful devices often end up in recycling bins or selling for a mere **£15 to £20 on second-hand markets**. 
 
-Yet, beneath the plastic enclosure sits high-spec dual-core silicon, 512 MB of RAM, and Wi-Fi 6 hardware functionally identical to **£100–£150+ commercial enterprise gateways**. The depreciation is purely software-imposed.
+Yet, beneath the plastic enclosure sits high-spec dual-core silicon, 512 MB of RAM, and Wi-Fi 6 hardware functionally identical to **£100 to £150+ commercial enterprise gateways**. The depreciation is purely software-imposed.
 
 **`silicon-salvage`** is a complete open-source research and engineering toolkit dedicated to liberating abandoned Customer Premises Equipment (CPE) and reclaiming the true value of the silicon. It documents bootloader passwords, serial UART interfaces, flash memory layouts, and clean OpenWrt Linux 6.18 ports with line-rate hardware offloading.
 
@@ -26,6 +26,12 @@ Yet, beneath the plastic enclosure sits high-spec dual-core silicon, 512 MB of R
 silicon-salvage/
 ├── COPYING                        # GNU General Public License v2.0
 ├── common/                        # Common utilities across all routers
+│   ├── diagnostics/               # Low-level hardware diagnostics
+│   │   ├── rwmem.c                # MMIO register reader/writer via /dev/mem
+│   │   ├── send_rwmem.py          # Serial base64 chunk uploader
+│   │   ├── spitest.c              # SPI-NAND hardware controller test
+│   │   ├── tcp_dump.c             # Direct TCP partition streamer
+│   │   └── README.md              # Diagnostics compilation guide
 │   ├── tftp_server.py             # Standalone Python TFTP server
 │   └── README.md
 ├── routers/
@@ -33,14 +39,17 @@ silicon-salvage/
 │   │   ├── README.md              # Full teardown, UART pinout, bootloader password, flash guide
 │   │   ├── root-recovery/         # acs.py, run.sh (local TR-069 ACS recovery)
 │   │   ├── config-tools/          # decode_config.py, encode_config.py, ztetool.py
-│   │   ├── tools/                 # ram_boot.py, autonomous_boot_catch.py, console.py
+│   │   ├── tools/                 # ram_boot.py, dump_stock_mdio.py, dump_all_vendor_regs.py, etc.
 │   │   ├── patches/               # openwrt-zte-zxhn-h3600.patch
 │   │   └── pinout/                # High-res UART header photos
 │   ├── zyxel-ex3301-t0/           # Zyxel EX3301-T0 (EcoNet EN751627)
-│   │   ├── README.md              # Hardware specs, U-Boot flash commands, install guide
+│   │   ├── README.md              # Hardware specs, bootloader flash commands, install guide
+│   │   ├── INSTALL-EX3301-T0.md   # Step-by-step installation guide
+│   │   ├── tools/                 # reboot_and_flash.py (automated bootloader catch & flash)
 │   │   └── patches/               # openwrt-zyxel-ex3301-t0.patch
 │   └── zyxel-wx3100-t0/           # Zyxel WX3100-T0 (EcoNet EN751627)
-│       ├── README.md              # Hardware specs, U-Boot flash commands, install guide
+│       ├── README.md              # Hardware specs, bootloader flash commands, install guide
+│       ├── INSTALL-WX3100-T0.md   # Step-by-step installation guide
 │       └── patches/               # openwrt-zyxel-wx3100-t0.patch
 ```
 
@@ -50,7 +59,7 @@ silicon-salvage/
 
 All routers in this project communicate over serial UART using **3.3V TTL** logic. Connecting standard 5V adapters can permanently destroy the processor's GPIO pins.
 
-To prevent ground loops between mains-powered routers and host development PCs, we recommend:
+To prevent ground loops between mains-powered routers and host development PCs, I recommend:
 * **[Waveshare Industrial USB-to-TTL Serial Converter](https://www.amazon.co.uk/dp/B0CX55K4RG?&linkCode=ll2&tag=navid015-21&linkId=fb0958a59eb9c1688fec1959cdadcac8&ref_=as_li_ss_tl)**: Features integrated galvanic digital isolation, onboard TVS surge suppression, and hardware 3.3V/5V level switching.
 
 ---
