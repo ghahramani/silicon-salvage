@@ -2,8 +2,7 @@
 import socket, time, threading, os, hashlib, sys
 from pathlib import Path
 
-ROOT = Path("/mnt/programming-ssd/projects/exploring/openwrt/zyxel")
-BACKUP_DIR = ROOT / "h3600/backup/stock_dump_clean"
+BACKUP_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd() / "stock_dump"
 BACKUP_DIR.mkdir(parents=True, exist_ok=True)
 HOST_IP = "192.168.55.14"
 ROUTER_IP = "192.168.55.1"

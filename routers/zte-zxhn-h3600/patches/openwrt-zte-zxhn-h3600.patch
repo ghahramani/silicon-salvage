@@ -1,4 +1,4 @@
-From cb343dd58f476dd78fc547a04753402dcaabf6f1 Mon Sep 17 00:00:00 2001
+From ead1ad61ded167bc7229c63d1af7ea6511f807f0 Mon Sep 17 00:00:00 2001
 From: Navid Ghahremani <ghahramani.navid@gmail.com>
 Date: Mon, 28 Sep 2026 21:25:56 +0100
 Subject: [PATCH] sanechips: add support for ZTE ZXHN H3600
@@ -61,9 +61,9 @@ Tested and Working:
 Signed-off-by: Navid Ghahremani <ghahramani.navid@gmail.com>
 ---
  package/kernel/mt76/Makefile                  |    2 +-
- ...lize-register-reads-with-outer-cache.patch |  108 ++
+ ...lize-register-reads-with-outer-cache.patch |  110 ++
  package/system/fstools/Makefile               |    2 +-
- ...001-mtd-oob-jffs2-cleanmarker-detect.patch |   46 +
+ ...001-mtd-oob-jffs2-cleanmarker-detect.patch |   48 +
  target/linux/sanechips/Makefile               |   22 +
  .../sanechips/base-files/etc/board.d/01_leds  |   17 +
  .../base-files/etc/board.d/02_network         |   17 +
@@ -77,18 +77,18 @@ Signed-off-by: Navid Ghahremani <ghahramani.navid@gmail.com>
  .../dts/zx279128s-zte-zxhn-h3600.dts          |  632 ++++++++
  target/linux/sanechips/generic/target.mk      |    3 +
  target/linux/sanechips/image/Makefile         |   53 +
- .../patches-6.18/001-zte-pl011-uart.patch     |  133 ++
- .../patches-6.18/002-arm-global-timer.patch   |   54 +
- .../patches-6.18/003-zte-zx-gpio.patch        |  362 +++++
- .../patches-6.18/004-zte-zx-smp.patch         |  158 ++
- .../patches-6.18/005-zte-zx-pcie.patch        |  340 ++++
- .../patches-6.18/006-zte-zx-mdio.patch        |  257 +++
- .../patches-6.18/007-zte-zx-eth.patch         | 1387 +++++++++++++++++
- .../patches-6.18/008-zte-zx-spinand.patch     | 1089 +++++++++++++
- ...ialize-device-reads-with-maintenance.patch |  195 +++
- .../010-zte-zx-eth-flow-offload.patch         |  908 +++++++++++
- .../011-zte-zx-eth-hw-switching.patch         |  468 ++++++
- 28 files changed, 7126 insertions(+), 2 deletions(-)
+ .../patches-6.18/001-zte-pl011-uart.patch     |  135 ++
+ .../patches-6.18/002-arm-global-timer.patch   |   56 +
+ .../patches-6.18/003-zte-zx-gpio.patch        |  364 +++++
+ .../patches-6.18/004-zte-zx-smp.patch         |  160 ++
+ .../patches-6.18/005-zte-zx-pcie.patch        |  342 ++++
+ .../patches-6.18/006-zte-zx-mdio.patch        |  259 +++
+ .../patches-6.18/007-zte-zx-eth.patch         | 1389 +++++++++++++++++
+ .../patches-6.18/008-zte-zx-spinand.patch     | 1091 +++++++++++++
+ ...ialize-device-reads-with-maintenance.patch |  197 +++
+ .../010-zte-zx-eth-flow-offload.patch         |  910 +++++++++++
+ .../011-zte-zx-eth-hw-switching.patch         |  470 ++++++
+ 28 files changed, 7152 insertions(+), 2 deletions(-)
  create mode 100644 package/kernel/mt76/patches/001-wifi-mt76-serialize-register-reads-with-outer-cache.patch
  create mode 100644 package/system/fstools/patches/001-mtd-oob-jffs2-cleanmarker-detect.patch
  create mode 100644 target/linux/sanechips/Makefile
@@ -117,7 +117,7 @@ Signed-off-by: Navid Ghahremani <ghahramani.navid@gmail.com>
  create mode 100644 target/linux/sanechips/patches-6.18/011-zte-zx-eth-hw-switching.patch
 
 diff --git a/package/kernel/mt76/Makefile b/package/kernel/mt76/Makefile
-index b379ad09a5..33c0c530bd 100644
+index b379ad09a5..a24b42c93a 100644
 --- a/package/kernel/mt76/Makefile
 +++ b/package/kernel/mt76/Makefile
 @@ -1,7 +1,7 @@
@@ -125,17 +125,19 @@ index b379ad09a5..33c0c530bd 100644
  
  PKG_NAME:=mt76
 -PKG_RELEASE=1
-+PKG_RELEASE=2
++PKG_RELEASE:=2
  
  PKG_LICENSE:=BSD-3-Clause-Clear
  PKG_LICENSE_FILES:=
 diff --git a/package/kernel/mt76/patches/001-wifi-mt76-serialize-register-reads-with-outer-cache.patch b/package/kernel/mt76/patches/001-wifi-mt76-serialize-register-reads-with-outer-cache.patch
 new file mode 100644
-index 0000000000..3f16efc05e
+index 0000000000..3a81282713
 --- /dev/null
 +++ b/package/kernel/mt76/patches/001-wifi-mt76-serialize-register-reads-with-outer-cache.patch
-@@ -0,0 +1,108 @@
+@@ -0,0 +1,110 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] wifi: mt76: serialize register reads with outer cache
 + maintenance where required
 +
@@ -258,11 +260,13 @@ index 8f9321fb36..2a6405bbfb 100644
  PKG_SOURCE_URL=$(PROJECT_GIT)/project/fstools.git
 diff --git a/package/system/fstools/patches/001-mtd-oob-jffs2-cleanmarker-detect.patch b/package/system/fstools/patches/001-mtd-oob-jffs2-cleanmarker-detect.patch
 new file mode 100644
-index 0000000000..526649278e
+index 0000000000..c236ef638c
 --- /dev/null
 +++ b/package/system/fstools/patches/001-mtd-oob-jffs2-cleanmarker-detect.patch
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,48 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] libfstools: read the JFFS2 cleanmarker from the OOB free bytes
 +
 +On NAND, JFFS2 stores the cleanmarker of an erased block in the OOB free
@@ -2007,11 +2011,13 @@ index 0000000000..f638514059
 +$(eval $(call BuildImage))
 diff --git a/target/linux/sanechips/patches-6.18/001-zte-pl011-uart.patch b/target/linux/sanechips/patches-6.18/001-zte-pl011-uart.patch
 new file mode 100644
-index 0000000000..fbe43655b2
+index 0000000000..5bec52a39e
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/001-zte-pl011-uart.patch
-@@ -0,0 +1,133 @@
+@@ -0,0 +1,135 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] serial: amba-pl011: add the ZTE ZX279128S UART
 +
 +The ZX279128S UART is a PL011 with the register layout of the ZTE ZX
@@ -2146,11 +2152,13 @@ index 0000000000..fbe43655b2
 + 
 diff --git a/target/linux/sanechips/patches-6.18/002-arm-global-timer.patch b/target/linux/sanechips/patches-6.18/002-arm-global-timer.patch
 new file mode 100644
-index 0000000000..674713bb30
+index 0000000000..d35b46e97d
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/002-arm-global-timer.patch
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,56 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] clocksource: make the ARM global timer selectable
 +
 +The ZX279128S (dual Cortex-A9) uses the ARM global timer as its clock
@@ -2206,11 +2214,13 @@ index 0000000000..674713bb30
 + 	help
 diff --git a/target/linux/sanechips/patches-6.18/003-zte-zx-gpio.patch b/target/linux/sanechips/patches-6.18/003-zte-zx-gpio.patch
 new file mode 100644
-index 0000000000..1913b76946
+index 0000000000..a4c1e337e5
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/003-zte-zx-gpio.patch
-@@ -0,0 +1,362 @@
+@@ -0,0 +1,364 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] gpio: add the ZTE ZX279128S GPIO controller
 +
 +Add a driver for the GPIO banks of the ZX279128S, used for the LEDs
@@ -2574,11 +2584,13 @@ index 0000000000..1913b76946
 ++MODULE_LICENSE("GPL");
 diff --git a/target/linux/sanechips/patches-6.18/004-zte-zx-smp.patch b/target/linux/sanechips/patches-6.18/004-zte-zx-smp.patch
 new file mode 100644
-index 0000000000..ebc8804206
+index 0000000000..0a19a52a6a
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/004-zte-zx-smp.patch
-@@ -0,0 +1,158 @@
+@@ -0,0 +1,160 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] soc: zte: add ZX279128S SMP bring-up
 +
 +The bootloader parks the second Cortex-A9 in WFE and sends it to IRAM
@@ -2738,11 +2750,13 @@ index 0000000000..ebc8804206
 ++CPU_METHOD_OF_DECLARE(zx279128_smp, "zte,zx279128-smp", &zx279128_smp_ops);
 diff --git a/target/linux/sanechips/patches-6.18/005-zte-zx-pcie.patch b/target/linux/sanechips/patches-6.18/005-zte-zx-pcie.patch
 new file mode 100644
-index 0000000000..5a7bcffafe
+index 0000000000..24ee1620f6
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/005-zte-zx-pcie.patch
-@@ -0,0 +1,340 @@
+@@ -0,0 +1,342 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] PCI: dwc: add the ZTE ZX279128S PCIe host controller
 +
 +Add a DesignWare based host driver for the two PCIe ports of the
@@ -3084,11 +3098,13 @@ index 0000000000..5a7bcffafe
 ++MODULE_LICENSE("GPL");
 diff --git a/target/linux/sanechips/patches-6.18/006-zte-zx-mdio.patch b/target/linux/sanechips/patches-6.18/006-zte-zx-mdio.patch
 new file mode 100644
-index 0000000000..38477ec87f
+index 0000000000..2d24a6fdbd
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/006-zte-zx-mdio.patch
-@@ -0,0 +1,257 @@
+@@ -0,0 +1,259 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] net: mdio: add the ZTE ZX279128S MDIO controller
 +
 +Add a driver for the MDIO bus of the ZX279128S that reaches the PHYs
@@ -3347,11 +3363,13 @@ index 0000000000..38477ec87f
 ++MODULE_LICENSE("GPL");
 diff --git a/target/linux/sanechips/patches-6.18/007-zte-zx-eth.patch b/target/linux/sanechips/patches-6.18/007-zte-zx-eth.patch
 new file mode 100644
-index 0000000000..12da046bcc
+index 0000000000..faca9b3280
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/007-zte-zx-eth.patch
-@@ -0,0 +1,1387 @@
+@@ -0,0 +1,1389 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] net: ethernet: add the ZTE ZX279128S Ethernet driver
 +
 +Add a driver for the integrated 5-port gigabit switch and DMA engine
@@ -4740,11 +4758,13 @@ index 0000000000..12da046bcc
 ++MODULE_LICENSE("GPL");
 diff --git a/target/linux/sanechips/patches-6.18/008-zte-zx-spinand.patch b/target/linux/sanechips/patches-6.18/008-zte-zx-spinand.patch
 new file mode 100644
-index 0000000000..f606eef4fa
+index 0000000000..e54c1c5997
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/008-zte-zx-spinand.patch
-@@ -0,0 +1,1089 @@
+@@ -0,0 +1,1091 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] mtd: devices: add the ZTE ZX279128S SPI-NAND controller
 +
 +Add an MTD driver for the SPI flash controller of the ZX279128S with
@@ -5835,11 +5855,13 @@ index 0000000000..f606eef4fa
 ++MODULE_DESCRIPTION("SPI NAND driver for ZTE ZX279128S SPIFC with bad-block skipping and write/erase support");
 diff --git a/target/linux/sanechips/patches-6.18/009-arm-l2c-serialize-device-reads-with-maintenance.patch b/target/linux/sanechips/patches-6.18/009-arm-l2c-serialize-device-reads-with-maintenance.patch
 new file mode 100644
-index 0000000000..88d60320c7
+index 0000000000..d613adb870
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/009-arm-l2c-serialize-device-reads-with-maintenance.patch
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,197 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] ARM: l2c: optionally serialize device reads with L2C-310
 + maintenance
 +
@@ -6036,11 +6058,13 @@ index 0000000000..88d60320c7
 + 	depends on PERF_EVENTS
 diff --git a/target/linux/sanechips/patches-6.18/010-zte-zx-eth-flow-offload.patch b/target/linux/sanechips/patches-6.18/010-zte-zx-eth-flow-offload.patch
 new file mode 100644
-index 0000000000..473922ed1c
+index 0000000000..7c24cb5aed
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/010-zte-zx-eth-flow-offload.patch
-@@ -0,0 +1,908 @@
+@@ -0,0 +1,910 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] net: ethernet: zte: zx279128: hardware flow offload
 +
 +The packet processor of the ZX279128S forwards established IPv4 TCP and
@@ -6950,11 +6974,13 @@ index 0000000000..473922ed1c
 + 			   adapter->bmu_alloc_fail, adapter->bmu_alloc_late,
 diff --git a/target/linux/sanechips/patches-6.18/011-zte-zx-eth-hw-switching.patch b/target/linux/sanechips/patches-6.18/011-zte-zx-eth-hw-switching.patch
 new file mode 100644
-index 0000000000..174067a148
+index 0000000000..6aa0687379
 --- /dev/null
 +++ b/target/linux/sanechips/patches-6.18/011-zte-zx-eth-hw-switching.patch
-@@ -0,0 +1,468 @@
+@@ -0,0 +1,470 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: Navid Ghahremani <ghahramani.navid@gmail.com>
++Date: Mon, 28 Sep 2026 00:00:00 +0100
 +Subject: [PATCH] net: ethernet: zte: zx279128: optional hardware LAN switching
 +
 +The switch's bridge block can forward unicast between its ports at line

@@ -44,12 +44,11 @@ silicon-salvage/
 │   │   └── pinout/                # High-res UART header photos
 │   ├── zyxel-ex3301-t0/           # Zyxel EX3301-T0 (EcoNet EN751627)
 │   │   ├── README.md              # Hardware specs, bootloader flash commands, install guide
-│   │   ├── INSTALL-EX3301-T0.md   # Step-by-step installation guide
 │   │   ├── tools/                 # reboot_and_flash.py (automated bootloader catch & flash)
 │   │   └── patches/               # openwrt-zyxel-ex3301-t0.patch
 │   └── zyxel-wx3100-t0/           # Zyxel WX3100-T0 (EcoNet EN751627)
 │       ├── README.md              # Hardware specs, bootloader flash commands, install guide
-│       ├── INSTALL-WX3100-T0.md   # Step-by-step installation guide
+│       ├── tools/                 # reboot_and_flash.py (automated bootloader catch & flash)
 │       └── patches/               # openwrt-zyxel-wx3100-t0.patch
 ```
 

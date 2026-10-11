@@ -50,12 +50,12 @@ setup*, `F`, then *Exit*.
 Give the PC's Ethernet port the address `192.168.1.2/24` (no gateway) and
 connect it to one of the two Ethernet ports. Save the installation image under
 the name the bootloader expects, `RAS.bin`, and serve it over TFTP, for
-example with dnsmasq:
+example with Docker:
 
 ```sh
 mkdir -p ~/tftp
 cp openwrt-econet-en751627-zyxel_wx3100-t0-squashfs-tclinux.trx ~/tftp/RAS.bin
-sudo dnsmasq -d -p 0 --enable-tftp --tftp-root="$HOME/tftp" --listen-address=192.168.1.2
+docker run -d --rm --name tftp --network host -v ~/tftp:/var/tftpboot pghalliday/tftp
 ```
 
 ## 4. Stop the Zyxel bootloader
@@ -83,11 +83,8 @@ ATUR RAS.bin,0
 
 `ATEN` enables the flash commands (answer: `OK`). `ATUR RAS.bin,0` downloads
 `RAS.bin` from `192.168.1.2` and writes it to **slot 0**. Always type the `,0`:
-it keeps the Zyxel firmware in slot 1. Wait for `OK`, then start OpenWrt:
-
-```
-ATGO
-```
+it keeps the Zyxel firmware in slot 1. Once flashing finishes, the device
+automatically prints `OK` and reboots into OpenWrt (no need to type `ATGO`).
 
 ## 6. First login
 
